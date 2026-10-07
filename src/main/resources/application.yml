@@ -1,0 +1,12 @@
+spring:
+  application:
+    name: email-deduplication-tool
+
+  servlet:
+    multipart:
+      max-file-size: 5MB
+      max-request-size: 6MB
+
+server:
+  address: 127.0.0.1
+  port: 8082

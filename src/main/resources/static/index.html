@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Email Deduplication Tool</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            padding: 40px 20px;
+            background: #f3f6fa;
+            color: #172033;
+            font-family: Arial, sans-serif;
+        }
+
+        .container {
+            max-width: 760px;
+            margin: 0 auto;
+            padding: 28px;
+            background: #ffffff;
+            border: 1px solid #dfe5ee;
+            border-radius: 14px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 12px;
+            font-weight: bold;
+        }
+
+        input[type="file"] {
+            width: 100%;
+            padding: 16px;
+            background: #f8faff;
+            border: 1px dashed #aebbd0;
+            border-radius: 8px;
+        }
+
+        .buttons {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 12px;
+            margin-top: 20px;
+        }
+
+        button {
+            padding: 14px 12px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+
+        #checkButton {
+            color: #ffffff;
+            background: #2457d6;
+        }
+
+        #uniqueButton {
+            color: #14613b;
+            background: #e7f5ed;
+        }
+
+        #duplicateButton {
+            color: #875300;
+            background: #fff1db;
+        }
+
+        button:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+        }
+
+        button:focus-visible,
+        input:focus-visible {
+            outline: 3px solid #89acff;
+            outline-offset: 3px;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 12px;
+            margin-top: 24px;
+        }
+
+        .stat {
+            padding: 18px 8px;
+            text-align: center;
+            border: 1px solid #dfe5ee;
+            border-radius: 8px;
+        }
+
+        .stat strong {
+            display: block;
+            margin-bottom: 6px;
+            font-size: 26px;
+        }
+
+        .stat span {
+            color: #596579;
+            font-size: 13px;
+        }
+
+        #status {
+            margin: 16px 0 0;
+            line-height: 1.5;
+        }
+
+        #status:empty {
+            display: none;
+        }
+
+        #status.error {
+            color: #b42318;
+        }
+
+        #status.success {
+            color: #167044;
+        }
+
+        @media (max-width: 540px) {
+            .container {
+                padding: 20px;
+            }
+
+            .buttons {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+
+<body>
+<main class="container">
+    <form id="uploadForm">
+        <label for="excelFile">Select Excel file</label>
+
+        <input
+                type="file"
+                id="excelFile"
+                accept=".xlsx"
+                required
+        >
+
+        <div class="buttons">
+            <button id="checkButton" type="submit">
+                Check
+            </button>
+
+            <button id="uniqueButton" type="button" disabled>
+                Download unique emails
+            </button>
+
+            <button id="duplicateButton" type="button" disabled>
+                Download duplicate emails
+            </button>
+        </div>
+    </form>
+
+    <p id="status" role="status" aria-live="polite"></p>
+
+    <section class="stats" aria-label="Email counts">
+        <div class="stat">
+            <strong id="totalCount">0</strong>
+            <span>Emails processed</span>
+        </div>
+
+        <div class="stat">
+            <strong id="uniqueCount">0</strong>
+            <span>Unique emails</span>
+        </div>
+
+        <div class="stat">
+            <strong id="duplicateCount">0</strong>
+            <span>Duplicate rows</span>
+        </div>
+    </section>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+
+<script>
+    const form = document.getElementById("uploadForm");
+    const fileInput = document.getElementById("excelFile");
+
+    const checkButton = document.getElementById("checkButton");
+    const uniqueButton = document.getElementById("uniqueButton");
+    const duplicateButton = document.getElementById("duplicateButton");
+
+    const statusElement = document.getElementById("status");
+    const totalCount = document.getElementById("totalCount");
+    const uniqueCount = document.getElementById("uniqueCount");
+    const duplicateCount = document.getElementById("duplicateCount");
+
+    const MAX_FILE_BYTES = 5 * 1024 * 1024;
+
+    let uniqueUrl = null;
+    let duplicateUrl = null;
+
+    function showStatus(message, type = "") {
+        statusElement.textContent = message;
+        statusElement.className = type;
+    }
+
+    function clearResults() {
+        uniqueButton.disabled = true;
+        duplicateButton.disabled = true;
+
+        totalCount.textContent = "0";
+        uniqueCount.textContent = "0";
+        duplicateCount.textContent = "0";
+
+        if (uniqueUrl) {
+            URL.revokeObjectURL(uniqueUrl);
+            uniqueUrl = null;
+        }
+
+        if (duplicateUrl) {
+            URL.revokeObjectURL(duplicateUrl);
+            duplicateUrl = null;
+        }
+    }
+
+    function readCount(response, headerName) {
+        const value = response.headers.get(headerName);
+
+        if (value === null || !/^\d+$/.test(value)) {
+            throw new Error("The server returned an invalid email count.");
+        }
+
+        const count = Number(value);
+
+        if (!Number.isSafeInteger(count)) {
+            throw new Error("The server returned an invalid email count.");
+        }
+
+        return count;
+    }
+
+    async function readError(response) {
+        const fallback = `Processing failed (HTTP ${response.status}).`;
+
+        try {
+            const problem = await response.json();
+            return problem.detail || problem.title || fallback;
+        } catch {
+            return fallback;
+        }
+    }
+
+    function downloadFile(url, filename) {
+        if (!url) {
+            return;
+        }
+
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = filename;
+
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+    }
+
+    uniqueButton.addEventListener("click", () => {
+        downloadFile(uniqueUrl, "unique-emails.xlsx");
+    });
+
+    duplicateButton.addEventListener("click", () => {
+        downloadFile(duplicateUrl, "duplicate-emails.xlsx");
+    });
+
+    fileInput.addEventListener("change", () => {
+        clearResults();
+        showStatus("");
+    });
+
+    form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        clearResults();
+
+        const file = fileInput.files[0];
+
+        if (!file) {
+            showStatus("Please select an Excel file.", "error");
+            return;
+        }
+
+        if (!file.name.toLowerCase().endsWith(".xlsx")) {
+            showStatus("Only .xlsx files are supported.", "error");
+            return;
+        }
+
+        if (file.size === 0) {
+            showStatus("The selected file is empty.", "error");
+            return;
+        }
+
+        if (file.size > MAX_FILE_BYTES) {
+            showStatus("The file must be no larger than 5 MB.", "error");
+            return;
+        }
+
+        if (typeof JSZip === "undefined") {
+            showStatus(
+                "The download library could not load. " +
+                "Check your internet connection and refresh the page.",
+                "error"
+            );
+            return;
+        }
+
+        checkButton.disabled = true;
+        fileInput.disabled = true;
+        form.setAttribute("aria-busy", "true");
+
+        showStatus("Processing…");
+
+        try {
+            const formData = new FormData();
+            formData.append("file", file);
+
+            const response = await fetch("/api/emails/deduplicate", {
+                method: "POST",
+                body: formData
+            });
+
+            if (!response.ok) {
+                throw new Error(await readError(response));
+            }
+
+            const total = readCount(response, "X-Total-Emails");
+            const unique = readCount(response, "X-Unique-Emails");
+            const duplicates = readCount(response, "X-Duplicate-Emails");
+
+            const archive = await response.arrayBuffer();
+            const zip = await JSZip.loadAsync(archive);
+
+            const uniqueFile = zip.file("unique-emails.xlsx");
+            const duplicateFile = zip.file("duplicate-emails.xlsx");
+
+            if (!uniqueFile || !duplicateFile) {
+                throw new Error("The response is missing an Excel file.");
+            }
+
+            const [uniqueBlob, duplicateBlob] = await Promise.all([
+                uniqueFile.async("blob"),
+                duplicateFile.async("blob")
+            ]);
+
+            uniqueUrl = URL.createObjectURL(uniqueBlob);
+            duplicateUrl = URL.createObjectURL(duplicateBlob);
+
+            totalCount.textContent = total;
+            uniqueCount.textContent = unique;
+            duplicateCount.textContent = duplicates;
+
+            uniqueButton.disabled = false;
+            duplicateButton.disabled = false;
+
+            showStatus("Files are ready to download.", "success");
+
+        } catch (error) {
+            clearResults();
+
+            showStatus(
+                error instanceof TypeError
+                    ? "Cannot connect. Make sure the application is running."
+                    : error.message || "Unable to process the file.",
+                "error"
+            );
+
+        } finally {
+            checkButton.disabled = false;
+            fileInput.disabled = false;
+            form.removeAttribute("aria-busy");
+        }
+    });
+
+    window.addEventListener("pagehide", clearResults);
+</script>
+</body>
+</html>
