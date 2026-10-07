@@ -108,3 +108,20 @@ analysis and testing guidance.
 This is a local portfolio application with synchronous processing.
 It does not currently include authentication, persistent job history
 or background processing.
+
+## Testing
+
+Run the automated tests and package the application:
+
+```powershell
+.\mvnw.cmd clean verify
+
+
+**2. Commit the Maven wrapper and README**
+
+Run from your current project folder:
+
+```powershell
+git add mvnw mvnw.cmd .mvn/ README.md
+git diff --cached --stat
+git status
